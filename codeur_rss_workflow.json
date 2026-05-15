@@ -1,0 +1,181 @@
+{
+  "name": "Codeur.com — RSS Project Alert",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "node-schedule",
+      "name": "Every 30 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://www.codeur.com/projects.rss",
+        "options": {}
+      },
+      "id": "node-rss",
+      "name": "Codeur RSS Feed",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = [];\n\nfor (const item of $input.all()) {\n  const title = (item.json.title || '').toLowerCase();\n  const description = (item.json.description || item.json.content || '').toLowerCase();\n  const fullText = title + ' ' + description;\n\n  // --- Budget filter ---\n  // Extract all amounts in euros from the text\n  const euroMatches = fullText.match(/(\\d[\\d\\s.,]*)(\\s*k€|\\s*k eur|\\s*000\\s*€|\\s*€)/g) || [];\n  const amounts = [];\n\n  // Parse amounts like \"2 000 €\", \"2000€\", \"2k€\", \"2.000€\"\n  const rawNumbers = fullText.match(/\\b(\\d[\\d\\s.,]{0,8})(?:\\s*k€|\\s*k eur|\\s*€)/g) || [];\n  for (const raw of rawNumbers) {\n    let num = raw.replace(/[^\\d.,k]/g, '');\n    if (num.includes('k')) {\n      num = parseFloat(num.replace('k', '')) * 1000;\n    } else {\n      num = parseFloat(num.replace(',', '.').replace(/\\s/g, ''));\n    }\n    if (!isNaN(num)) amounts.push(num);\n  }\n\n  // Decision: pass if at least one amount is between 1000 and 10000\n  // OR if no budget is mentioned at all (unknown budget)\n  let budgetOk = false;\n  if (amounts.length === 0) {\n    // No budget mentioned → let it through\n    budgetOk = true;\n  } else {\n    budgetOk = amounts.some(a => a >= 1000 && a <= 10000);\n  }\n\n  if (budgetOk) {\n    items.push(item);\n  }\n}\n\nreturn items;"
+      },
+      "id": "node-budget",
+      "name": "Budget Filter (1k–10k€)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "application": "YOUR_AIRTABLE_BASE_ID",
+        "table": "Codeur Projects",
+        "filterByFormula": "={guid}='{{ $json.guid }}'",
+        "options": {}
+      },
+      "id": "node-airtable-search",
+      "name": "Airtable — Check Duplicate",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [900, 300],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "YOUR_AIRTABLE_CREDENTIAL_ID",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-not-exists",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-duplicate",
+      "name": "IF — Not Already Sent",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "application": "YOUR_AIRTABLE_BASE_ID",
+        "table": "Codeur Projects",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "guid": "={{ $('Codeur RSS Feed').item.json.guid }}",
+            "titre": "={{ $('Codeur RSS Feed').item.json.title }}",
+            "lien": "={{ $('Codeur RSS Feed').item.json.link }}",
+            "date": "={{ $('Codeur RSS Feed').item.json.pubDate }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node-airtable-create",
+      "name": "Airtable — Save Project",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1340, 200],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "YOUR_AIRTABLE_CREDENTIAL_ID",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "YOUR_EMAIL@gmail.com",
+        "toEmail": "YOUR_EMAIL@gmail.com",
+        "subject": "=🆕 [Codeur] {{ $('Codeur RSS Feed').item.json.title }}",
+        "emailType": "html",
+        "message": "=<h2>New project detected on Codeur.com</h2>\n\n<p><strong>📌 Project:</strong> {{ $('Codeur RSS Feed').item.json.title }}</p>\n<p><strong>🔗 Link:</strong> <a href=\"{{ $('Codeur RSS Feed').item.json.link }}\">Open on Codeur</a></p>\n<p><strong>📅 Published:</strong> {{ $('Codeur RSS Feed').item.json.pubDate }}</p>\n\n<hr />\n\n<h3>📄 Description</h3>\n<p>{{ $('Codeur RSS Feed').item.json.description }}</p>\n\n<hr />\n\n<h3>✉️ Your template message — copy/paste on Codeur</h3>\n<blockquote>\n<p>Bonjour,</p>\n<p>J'ai bien lu la description de votre projet et je pense pouvoir vous apporter une solution efficace.</p>\n<p>Je suis développeur Python & automatisation (n8n, IA) basé à Rennes, avec une approche pragmatique : des outils qui fonctionnent, livrés dans les délais, sans jargon.</p>\n<p>Pourriez-vous me préciser vos contraintes de délai et le format de livraison attendu ? Je pourrai ainsi vous faire une proposition adaptée.</p>\n<p>Cordialement,<br/>Emmanuel Ruaudel<br/>rennesdev.fr</p>\n</blockquote>",
+        "options": {}
+      },
+      "id": "node-email",
+      "name": "Send Email Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1560, 200],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YOUR_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail OAuth2"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 30 min": {
+      "main": [
+        [{ "node": "Codeur RSS Feed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Codeur RSS Feed": {
+      "main": [
+        [{ "node": "Budget Filter (1k–10k€)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Budget Filter (1k–10k€)": {
+      "main": [
+        [{ "node": "Airtable — Check Duplicate", "type": "main", "index": 0 }]
+      ]
+    },
+    "Airtable — Check Duplicate": {
+      "main": [
+        [{ "node": "IF — Not Already Sent", "type": "main", "index": 0 }]
+      ]
+    },
+    "IF — Not Already Sent": {
+      "main": [
+        [
+          { "node": "Airtable — Save Project", "type": "main", "index": 0 }
+        ],
+        []
+      ]
+    },
+    "Airtable — Save Project": {
+      "main": [
+        [{ "node": "Send Email Alert", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["codeur", "freelance", "rss", "automatisation"]
+}
